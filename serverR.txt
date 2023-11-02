@@ -1,0 +1,256 @@
+# Load required libraries
+library(shiny)
+library(shinyjs)
+library(clusterProfiler) #
+library(magrittr)
+library(ggupset)
+library(AnnotationDbi)
+library(org.Mm.eg.db)
+library(org.Hs.eg.db)
+library(msigdbr)
+library(tidyverse)
+library(tools) # R tools
+library(png)
+library(UpSetR)
+library(ggridges)
+library(enrichplot)
+library(rsconnect)
+
+# library(rethinking)
+
+## using separate function to preform individual workload
+
+# Over-Representation Analysis
+ora_Analysis <- function(data, customGene){
+  selected_gene <- customGene
+  ORAresult <- enricher(
+    gene = filterFoldchang_pAdj(data),
+    TERM2GENE = selected_gene,
+    pvalueCutoff = 0.05,
+    pAdjustMethod = "BH",
+    qvalueCutoff = 0.2,
+    minGSSize = 10,
+    maxGSSize = 500
+  )
+  return(ORAresult)
+}
+
+# Gene set Enrichment Analysis
+gsea_Analysis <- function (data, customGene)
+{
+  select_gene <- customGene
+  GSEAresult <- GSEA(
+    geneList = filterGene_Set(data),
+    minGSSize = 10,
+    maxGSSize = 1000,
+    pvalueCutoff = 0.05,
+    TERM2GENE = select_gene
+  )
+  return(GSEAresult)
+}
+
+# filter value of fold change and pAdj
+filterFoldchang_pAdj <- function(data)
+{
+  adjData <- data %>% filter(PValue < 0.05 & abs(logFC) > 0)
+  adjData$entrez
+}
+
+# filter gene set with NA's
+filterGene_Set <- function(data)
+{
+  gene_List <- data$logFC
+ 
+  names(gene_List) = as.character(data$entrez)
+ 
+  if (any(is.na(gene_List)) | any(is.na(names(gene_List))))
+  {
+    gene_List = gene_List[which(!is.na(gene_List) & !is.na(names(gene_List)))]
+  }
+ 
+  gene_List = sort(gene_List, decreasing = TRUE)
+ 
+  return(gene_List)
+}
+
+server <- function(input, output, session) {
+ 
+ 
+  # access directly from local
+  df <- read.table("LM_naive_DE.txt", header = TRUE)
+ 
+  output$downloadExampleFile <- downloadHandler(filename = function(){paste("exampleFile",".txt")},content = function(file){write.table(df, file)})
+  output$fileText <- renderText("Here is an example of mouse gene file, download this file if you do not have a gene file to run the analysis.")
+ 
+  # upload file and check file type
+  data <- reactive({
+    req(input$upload)
+    inFile <- input$upload
+   
+    if (is.null(inFile))
+      return(NULL)
+   
+    get_fileExtension <- tools::file_ext(inFile$name)
+   
+    if (!(get_fileExtension %in% c("txt", "csv"))) {
+      showNotification("Please upload a TXT file or a CSV file", type = "warning")
+      return(NULL)
+    }
+   
+    tryCatch({
+      if (get_fileExtension == "txt") {
+        data <- read.table(inFile$datapath)
+      } else if (get_fileExtension == "csv") {
+        data <- read.csv(inFile$datapath, stringsAsFactors = FALSE)
+      }
+     
+      showNotification("File uploaded successfully")
+      return(data)
+    }, error = function(e) {
+      showNotification("An error occurred while reading the file", type = "error")
+      print(e)
+      return(NULL)
+    })
+  })
+ 
+  # Custom gene set upload
+  upload_entrezID <- eventReactive(input$customFile, {
+    req(input$customFile)
+    inFile <- input$customFile
+   
+    if (is.null(inFile))
+      return(NULL)
+   
+    get_fileExtension <- tools::file_ext(inFile$name)
+   
+    if (!(get_fileExtension %in% c("txt", "csv"))) {
+      showNotification("Please upload a TXT file or a CSV file", type = "warning")
+      return(NULL)
+    }
+   
+    tryCatch({
+      if (get_fileExtension == "txt") {
+        upload_customGene <- read.table(inFile$datapath)
+      } else if (get_fileExtension == "csv") {
+        upload_customGene <- read.csv(inFile$datapath, stringsAsFactors = FALSE)
+      }
+     
+      showNotification("File uploaded successfully")
+      return(upload_customGene)
+    }, error = function(e) {
+      showNotification("An error occurred while reading the file", type = "error")
+      print(e)
+      return(NULL)
+    })
+  })
+ 
+  # ui here so these selection appears in the sidebarpanel
+  output$fileInputPanel <- renderUI({
+    if (input$selection == "Load custom gene set") {
+      fileInput("customFile", label = "Upload Custom Gene File", accept = c('.txt', '.csv'))
+    } else if (input$selection == "Select gene set") {
+      tagList(
+        selectInput(input = "chooseSpecie", label = "Choose a Species", choices = list("Homo sapiens", "Mus musculus"), multiple = FALSE),
+        selectInput(input = "chooseGene", label = "Choose a Gene Collection",
+                    choices = list("H", "C1", "C2", "C3", "C4", "C5", "C6", "C7", "C8"))
+      )
+    }
+  })
+ 
+  # allow user to select custom gene or manually select gene set
+  customGene <- reactive({
+    req(input$selection)
+    if (input$selection == "Load custom gene set") {
+      colnames(upload_entrezID)[1] <- "entrez_gene"
+      gs_symbol <- data.frame(matrix(mapIds(org.Mm.eg.db, as.character(upload_entrezID$entrez_gene), "SYMBOL", "ENTREZID")))
+      colnames(gs_symbol) <- "gene_symbol"
+     
+      custGene <- cbind(gs_symbol, upload_entrezID)
+      return(custGene)
+    } else if (input$selection == "Select gene set") {
+      return(msigdbr(species = input$chooseSpecie, category = input$chooseGene) %>% dplyr::select(gs_name, entrez_gene))
+    }
+  })
+ 
+  resultData <- reactiveVal(NULL)
+ 
+  # verify which analysis user will perfom
+  observeEvent(input$analyze, {
+
+    if(input$chooseAnalysis == "Over-Representation Analysis")
+    {
+      ora_result <- ora_Analysis(data(), customGene())
+      resultData(ora_result)
+    }
+    if (input$chooseAnalysis == "Gene Set Enrichment Analysis")
+    {
+      gsea_result <- gsea_Analysis(data(), customGene())
+      resultData(gsea_result)
+    }
+
+    output$outputText <- renderText("Processing...")
+
+    if (!is.null(resultData())) {
+
+      output$tableResult <- renderTable(head(resultData()))
+      output$outputText <- renderText("Complete Process")
+     
+      output$selectedPlot <- renderPlot({
+        if (input$plotType == "dotplot") {
+          dotplot(resultData())
+        } else if (input$plotType == "upsetplot") {
+          upsetplot(resultData())
+        } else if (input$plotType == "ridgeplot") {
+          ridgeplot(resultData())
+        } else if (input$plotType == "cnetplot") {
+          cnetplot(resultData())
+        }
+      })
+    }
+  })
+
+  output$download_file <- downloadHandler(
+    filename = "result.csv",
+    content = function(file) {
+      write.csv(resultData(), file)
+    }
+  )
+ 
+  output$downloadImage <- downloadHandler (
+    # specify the file name
+    filename = function()
+    {
+      # name the plot file
+      paste0("shinyPlot.", input$plotFiletype)
+    },
+    # select different types of plot
+    content = function(file)
+    {
+      if(input$plotFiletype == "png")
+        png(file)
+      else
+        pdf(file)
+     
+      if(input$chooseAnalysis == "Over-Representation Analysis")
+      {
+        if(input$plotType == "dotplot"){plot(dotplot(resultData()))}                        # dotplot
+        else if(input$plotType == "upsetplot"){plot(enrichplot::upsetplot(resultData()))}   # upsetplot
+        else if (input$plotType == "ridgeplot"){plot(ridgeplot(resultData()))}              # ridgeplot
+        else if (input$plotType == "cnetplot") {plot(cnetplot(resultData()))}               # cnetplot
+      }
+      else if(input$chooseAnalysis == "Gene Set Enrichment Analysis")
+      {
+        if(input$plotType == "dotplot"){plot(dotplot(resultData()))}        
+        else if(input$plotType == "upset"){plot(enrichplot::upsetplot(resultData()))}
+        else if (input$plotType == "ridgeplot"){plot(ridgeplot(resultData()))}
+        else if (input$plotType == "cnetplot") {plot(cnetplot(resultData()))} ##
+        else if (input$plotType == "gseaplot"){plot(enrichplot::gseaplot(resultData()))}
+        }
+     
+      dev.off()
+    }
+  )
+}
+
+
+shinyApp(ui, server)

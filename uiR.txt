@@ -1,0 +1,55 @@
+library(shiny)
+
+ui <- function() {
+  fluidPage(
+    # theme = bslib::bs_theme(bootswatch = "darkly"),
+    titlePanel("Enrichment Analysis Shiny App"),
+   
+    # output string to Shiny App
+    textOutput("outputText"),
+   
+    # download image
+    sidebarLayout(
+      sidebarPanel(
+        downloadButton("downloadExampleFile", "Download an Exmaple File"),
+       
+        textOutput("fileText"),
+       
+        # new
+        radioButtons("selection","Select an option:", choices = c("Load custom gene set", "Select gene set")),
+       
+        # upload file button
+        fileInput(input = "upload",label = "Upload File", accept = c('.txt', '.csv')),
+        # fileInput(input = "customFile", label = "Upload Custom Gene File", accept = c('.txt', '.csv')),
+       
+        # new
+        uiOutput("fileInputPanel"),
+       
+        # user can choose GSEA or ORA
+        selectInput(input = "chooseAnalysis", label = "Choose an Analysis", choices = list("Over-Representation Analysis", "Gene Set Enrichment Analysis")),
+       
+        # 'Analyze' button
+        actionButton("analyze", "Analyze"),
+       
+        selectInput(input = "plotType", label = "Choose a Plot Type", choices = list("dotplot", "upsetplot", "ridgeplot", "cnetplot")),
+       
+        # user can choose file type
+        radioButtons(inputId = "plotFiletype", label = "Select Download File Type", choices = list("png", "pdf")),
+       
+        # download file
+        downloadButton("download_file", "Download File"),
+       
+        # download plot image
+        downloadButton("downloadImage", "Download Image")),
+     
+        mainPanel(
+         
+          # Output 10 line of analysis result
+          tableOutput("tableResult"),
+         
+          plotOutput("selectedPlot"),
+         
+          ),)
+       
+  )
+}
